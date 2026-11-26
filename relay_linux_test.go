@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -108,6 +109,26 @@ func TestMixedAndBudget(t *testing.T) {
 	l.depart(2)
 	if !l.admit(1) {
 		t.Fatal("released capacity was lost")
+	}
+}
+
+func TestAddressFlags(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readConfig([]string{"-l", "localhost:8443", "-4", "localhost:443", "-allowed-subnets", path}, io.Discard)
+	if err != nil || !cfg.front.Addr().IsLoopback() || !cfg.back4.Addr().Is4() || len(cfg.peers) != 0 {
+		t.Fatal(cfg, err)
+	}
+	for _, flag := range []string{"-allow-raw-tcp", "-allowed-destinations"} {
+		args := []string{"-allowed-subnets", path, flag}
+		if flag == "-allowed-destinations" {
+			args = append(args, path)
+		}
+		if _, err := readConfig(args, io.Discard); err == nil {
+			t.Fatalf("%s accepted an empty allowlist", flag)
+		}
 	}
 }
 
@@ -248,14 +269,46 @@ func TestNamespaceCompatibility(t *testing.T) {
 				}
 			}
 		})
+		t.Run(name+"/dynamic-transparent-tcp", func(t *testing.T) {
+			backend, err := net.ListenTCP("tcp4", net.TCPAddrFromAddrPort(loop4))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backend.Close()
+			cfg := config{back4: netip.MustParseAddrPort("127.0.0.1:1"), back6: netip.MustParseAddrPort("[::1]:1")}
+			front := runProxy(t, "tcp", cfg, exe, "-dynamic-destination", "-listen-transparent")
+			client, err := net.DialTCP("tcp4", nil, net.TCPAddrFromAddrPort(front))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			source := netip.MustParseAddrPort("192.0.2.11:31500")
+			destination := backend.Addr().(*net.TCPAddr).AddrPort()
+			line := fmt.Sprintf("PROXY TCP4 %s %s %d %d\r\npayload", source.Addr(), destination.Addr(), source.Port(), destination.Port())
+			if _, err := io.WriteString(client, line); err != nil {
+				t.Fatal(err)
+			}
+			_ = backend.SetDeadline(time.Now().Add(3 * time.Second))
+			server, err := backend.AcceptTCP()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer server.Close()
+			_ = server.SetDeadline(time.Now().Add(3 * time.Second))
+			payload := make([]byte, len("payload"))
+			if _, err := io.ReadFull(server, payload); err != nil || string(payload) != "payload" || server.RemoteAddr().String() != source.String() {
+				t.Fatal(string(payload), server.RemoteAddr(), err)
+			}
+		})
 		t.Run(name+"/udp", func(t *testing.T) {
 			server, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(loop4))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer server.Close()
-			cfg := config{back4: server.LocalAddr().(*net.UDPAddr).AddrPort(), back6: netip.MustParseAddrPort("[::1]:22")}
-			front := runProxy(t, "udp", cfg, exe)
+			target := server.LocalAddr().(*net.UDPAddr).AddrPort()
+			cfg := config{back4: netip.MustParseAddrPort("127.0.0.1:1"), back6: netip.MustParseAddrPort("[::1]:1")}
+			front := runProxy(t, "udp", cfg, exe, "-dynamic-destination", "-listen-transparent")
 			client, err := net.DialUDP("udp4", nil, net.UDPAddrFromAddrPort(front))
 			if err != nil {
 				t.Fatal(err)
@@ -264,7 +317,7 @@ func TestNamespaceCompatibility(t *testing.T) {
 			_ = client.SetDeadline(time.Now().Add(3 * time.Second))
 			_ = server.SetDeadline(time.Now().Add(3 * time.Second))
 			source := netip.MustParseAddrPort("192.0.2.8:31501")
-			if _, err := client.Write(append(binaryHeader(source, cfg.back4, 2), []byte("ping")...)); err != nil {
+			if _, err := client.Write(append(binaryHeader(source, target, 2), []byte("ping")...)); err != nil {
 				t.Fatal(err)
 			}
 			buf := make([]byte, 16)
@@ -281,6 +334,52 @@ func TestNamespaceCompatibility(t *testing.T) {
 			}
 		})
 	}
+	t.Run("mixed/raw-and-addressless", func(t *testing.T) {
+		backend, err := net.ListenTCP("tcp4", net.TCPAddrFromAddrPort(loop4))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer backend.Close()
+		allow := filepath.Join(t.TempDir(), "allowed")
+		if err := os.WriteFile(allow, []byte("127.0.0.2/32\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config{back4: backend.Addr().(*net.TCPAddr).AddrPort(), back6: netip.MustParseAddrPort("[::1]:1")}
+		front := runProxy(t, "tcp", cfg, execPath, "-allow-raw-tcp", "-allowed-subnets", allow)
+		dialer := net.Dialer{
+			Timeout:   3 * time.Second,
+			LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 2)},
+			Control: func(_, _ string, c syscall.RawConn) error {
+				var socketErr error
+				if err := c.Control(func(fd uintptr) {
+					socketErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+				}); err != nil {
+					return err
+				}
+				return socketErr
+			},
+		}
+		for _, wire := range []string{"", "GET /", "PROXY UNKNOWN\r\n"} {
+			client, err := dialer.DialContext(context.Background(), "tcp4", front.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			if _, err := io.WriteString(client, wire); err != nil {
+				t.Fatal(err)
+			}
+			_ = backend.SetDeadline(time.Now().Add(3 * time.Second))
+			server, err := backend.AcceptTCP()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer server.Close()
+			preserved := server.RemoteAddr().String() == client.LocalAddr().String()
+			if preserved != (wire != "PROXY UNKNOWN\r\n") {
+				t.Fatalf("input %q: backend peer %s, client %s", wire, server.RemoteAddr(), client.LocalAddr())
+			}
+		}
+	})
 	t.Run("namespace routing conflicts", func(t *testing.T) {
 		output, err := exec.Command("ip", "-4", "rule", "add", "from", "198.51.100.0/24", "lookup", "123", "priority", "32765").CombinedOutput()
 		if err != nil {
