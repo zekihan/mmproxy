@@ -9,7 +9,7 @@ builds:
     goarch: [amd64, arm64]
 archives:
   - formats: [tar.gz]
-    files: [LICENSE, README.md]
+    files: [LICENSE, LICENSE-Go, README.md]
 checksum:
   name_template: checksums.txt
 release:
