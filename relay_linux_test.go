@@ -344,6 +344,50 @@ func TestNamespaceCompatibility(t *testing.T) {
 			}
 		})
 	}
+	t.Run("first-party/udp-admission", func(t *testing.T) {
+		backend, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(loop4))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer backend.Close()
+		target := backend.LocalAddr().(*net.UDPAddr).AddrPort()
+		cfg := config{back4: target, back6: netip.MustParseAddrPort("[::1]:1")}
+		front := runProxy(t, "udp", cfg, execPath, "-max-connections", "1", "-close-after", "2")
+		client, err := net.DialUDP("udp4", nil, net.UDPAddrFromAddrPort(front))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		send := func(source netip.AddrPort, accepted bool) {
+			t.Helper()
+			if _, err := client.Write(append(binaryHeader(source, target, 2), 'x')); err != nil {
+				t.Fatal(err)
+			}
+			wait := time.Second
+			if !accepted {
+				wait = 250 * time.Millisecond
+			}
+			if err := backend.SetReadDeadline(time.Now().Add(wait)); err != nil {
+				t.Fatal(err)
+			}
+			var buf [1]byte
+			n, peer, err := backend.ReadFromUDPAddrPort(buf[:])
+			if !accepted {
+				if n != 0 || !errors.Is(err, os.ErrDeadlineExceeded) {
+					t.Fatal("accepted a new flow at capacity", peer, err)
+				}
+			} else if err != nil || n != 1 || buf[0] != 'x' || peer != source {
+				t.Fatal("expected flow did not reach backend", peer, err)
+			}
+		}
+		active := netip.MustParseAddrPort("192.0.2.12:31501")
+		newFlow := netip.MustParseAddrPort("192.0.2.13:31501")
+		send(active, true)
+		send(newFlow, false)
+		send(active, true)
+		time.Sleep(2250 * time.Millisecond)
+		send(newFlow, true)
+	})
 	t.Run("mixed/raw-and-addressless", func(t *testing.T) {
 		backend, err := net.ListenTCP("tcp4", net.TCPAddrFromAddrPort(loop4))
 		if err != nil {

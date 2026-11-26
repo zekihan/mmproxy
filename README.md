@@ -22,4 +22,12 @@ docker run --rm --cap-drop=ALL --cap-add=NET_ADMIN \
 
 The relay and parser are first-party. The policy routing encoder and environment contract derive from the first-party dockerfiles mmproxy entrypoint. The upstream v2.3.1 binary is only built inside compatibility tests.
 
-Run `go test -race ./...` and `go vet ./...` locally. The CI namespace test installs routing in an isolated network namespace and compares TCP and UDP forwarding against v2.3.1. Release binaries target Linux amd64 and arm64.
+Run `go test -race ./...` and `go vet ./...` locally. The CI namespace tests install routing in an isolated network namespace. Release binaries target Linux amd64 and arm64.
+
+| Namespace test | Behavior |
+| --- | --- |
+| TCP forwarding | Both implementations preserve the source and half-close streams. mmproxy also selects the IPv6 backend from a TCP6 PROXY header over an IPv4 listener and accepts fragmented headers. |
+| Dynamic destinations | Both forward PROXY v1 TCP and PROXY v2 UDP to the advertised destination when enabled. The namespace fixtures use transparent listeners and multiple listener sockets. |
+| UDP flow expiry | Both expire idle flows using `-close-after`. mmproxy keeps existing flows when its connection budget blocks new ones and admits new flows after expiry. |
+| Mixed TCP | mmproxy requires an explicit nonempty peer allowlist. It preserves the frontend source for both silent and talk-first raw TCP. Addressless headers use an ordinary connection to the fixed backend. |
+| Policy routing | mmproxy reuses matching entries and rejects conflicts. |
