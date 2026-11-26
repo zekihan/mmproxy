@@ -2,7 +2,11 @@ FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:5f1b98fa02fe396ebce2a0227a0e
 WORKDIR /src
 COPY go.mod *.go LICENSE LICENSE-Go ./
 ARG TARGETOS TARGETARCH VERSION=dev
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /mmproxy .
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libcap2-bin \
+    && rm -rf /var/lib/apt/lists/*
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /mmproxy . \
+    && setcap cap_net_admin=ep /mmproxy
 
 FROM scratch
 LABEL org.opencontainers.image.source="https://github.com/zekihan/mmproxy" \
