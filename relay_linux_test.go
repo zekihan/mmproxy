@@ -332,6 +332,16 @@ func TestNamespaceCompatibility(t *testing.T) {
 			if err != nil || string(buf[:n]) != "pong" {
 				t.Fatal(string(buf[:n]), err)
 			}
+			// The upstream idle timer may observe the initial reply on its
+			// first sweep and close the flow on its second.
+			time.Sleep(2250 * time.Millisecond)
+			_ = client.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+			if _, err := server.WriteToUDPAddrPort([]byte("late"), peer); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := client.Read(buf); n != 0 || !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatal("late reply on expired UDP flow", n, err)
+			}
 		})
 	}
 	t.Run("mixed/raw-and-addressless", func(t *testing.T) {
@@ -346,6 +356,15 @@ func TestNamespaceCompatibility(t *testing.T) {
 		}
 		cfg := config{back4: backend.Addr().(*net.TCPAddr).AddrPort(), back6: netip.MustParseAddrPort("[::1]:1")}
 		front := runProxy(t, "tcp", cfg, execPath, "-allow-raw-tcp", "-allowed-subnets", allow)
+		rejected, err := net.DialTCP("tcp4", nil, net.TCPAddrFromAddrPort(front))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rejected.Close()
+		_ = rejected.SetReadDeadline(time.Now().Add(time.Second))
+		if _, err := rejected.Read(make([]byte, 1)); !errors.Is(err, io.EOF) && !errors.Is(err, syscall.ECONNRESET) {
+			t.Fatal("peer outside mixed allowlist was not closed", err)
+		}
 		dialer := net.Dialer{
 			Timeout:   3 * time.Second,
 			LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 2)},
