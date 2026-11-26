@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   decide:
-    uses: zekihan/release-workflows/.github/workflows/decide.yaml@e01866efdad68a2304156b36267e742f0fc5e4d4 # main
+    uses: zekihan/release-workflows/.github/workflows/decide.yaml@98a85ab2b0ae4dd702aa142b1369277404f124df # main
     permissions:
       contents: read
       actions: read
@@ -26,7 +26,7 @@ jobs:
     uses: ./.github/workflows/checks.yaml
   publish:
     needs: [decide, checks]
-    uses: zekihan/release-workflows/.github/workflows/image.yaml@e01866efdad68a2304156b36267e742f0fc5e4d4 # main
+    uses: zekihan/release-workflows/.github/workflows/image.yaml@98a85ab2b0ae4dd702aa142b1369277404f124df # main
     permissions:
       contents: read
       packages: write
@@ -58,7 +58,7 @@ jobs:
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   release:
     needs: [decide, checks, publish]
-    uses: zekihan/release-workflows/.github/workflows/release.yaml@e01866efdad68a2304156b36267e742f0fc5e4d4 # main
+    uses: zekihan/release-workflows/.github/workflows/release.yaml@98a85ab2b0ae4dd702aa142b1369277404f124df # main
     permissions:
       contents: write
       packages: write
