@@ -1,0 +1,36 @@
+name: Checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check formatting, tests, and architecture builds
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "$RUNNER_TEMP/mmproxy-$arch" .
+          done
+      - name: Run compatibility tests in isolated namespaces
+        run: |
+          git init "$RUNNER_TEMP/upstream"
+          git -C "$RUNNER_TEMP/upstream" fetch --depth 1 https://github.com/kzemek/go-mmproxy.git e5c3c990eed960dacd34038c088d6ce4c4b35c97
+          git -C "$RUNNER_TEMP/upstream" checkout --detach FETCH_HEAD
+          (cd "$RUNNER_TEMP/upstream" && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/upstream-mmproxy" .)
+          MMPROXY_TEST_BINARY="$RUNNER_TEMP/mmproxy-amd64" MMPROXY_TEST_UPSTREAM="$RUNNER_TEMP/upstream-mmproxy" \
+            unshare --user --map-root-user --net -- sh -ec 'ip link set lo up; MMPROXY_TEST_NETNS=1 go test -v -count=1 -run TestNamespaceCompatibility'
