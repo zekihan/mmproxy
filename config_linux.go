@@ -6,8 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -51,10 +53,31 @@ func readPrefixes(path string) ([]netip.Prefix, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	if len(prefixes) == 0 {
-		return nil, fmt.Errorf("empty allowlist: %s", path)
-	}
 	return prefixes, nil
+}
+
+func resolveAddress(value string, family int) (netip.AddrPort, error) {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	number, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	addresses, err := net.LookupIP(host)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	for _, address := range addresses {
+		if addr, ok := netip.AddrFromSlice(address); ok {
+			addr = addr.Unmap()
+			if family == 0 || family == 4 && addr.Is4() || family == 6 && addr.Is6() {
+				return netip.AddrPortFrom(addr, uint16(number)), nil
+			}
+		}
+	}
+	return netip.AddrPort{}, errors.New("no address of the requested family")
 }
 
 func readConfig(args []string, output io.Writer) (config, error) {
@@ -98,20 +121,23 @@ func readConfig(args []string, output io.Writer) (config, error) {
 		return cfg, errors.New("invalid mark, verbosity, listener count, limit or timeout")
 	}
 	var err error
-	if cfg.front, err = netip.ParseAddrPort(front); err != nil {
+	if cfg.front, err = resolveAddress(front, 0); err != nil {
 		return cfg, fmt.Errorf("-l: %w", err)
 	}
-	if cfg.back4, err = netip.ParseAddrPort(v4); err != nil || !cfg.back4.Addr().Is4() {
-		return cfg, errors.New("-4 needs an IPv4 address and port")
+	if cfg.back4, err = resolveAddress(v4, 4); err != nil {
+		return cfg, fmt.Errorf("-4: %w", err)
 	}
-	if cfg.back6, err = netip.ParseAddrPort(v6); err != nil || !cfg.back6.Addr().Is6() || cfg.back6.Addr().Is4In6() {
-		return cfg, errors.New("-6 needs an IPv6 address and port")
+	if cfg.back6, err = resolveAddress(v6, 6); err != nil {
+		return cfg, fmt.Errorf("-6: %w", err)
 	}
 	if cfg.peers, err = readPrefixes(allowed); err != nil {
 		return cfg, err
 	}
 	if cfg.destinations, err = readPrefixes(destinations); err != nil {
 		return cfg, err
+	}
+	if destinations != "" && len(cfg.destinations) == 0 {
+		return cfg, fmt.Errorf("empty destination allowlist: %s", destinations)
 	}
 	if cfg.mixed && (cfg.protocol != "tcp" || len(cfg.peers) == 0) {
 		return cfg, errors.New("-allow-raw-tcp needs a nonempty -allowed-subnets file and TCP")
