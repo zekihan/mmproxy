@@ -5,6 +5,10 @@ ARG TARGETOS TARGETARCH VERSION=dev
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /mmproxy .
 
 FROM scratch
+LABEL org.opencontainers.image.source="https://github.com/zekihan/mmproxy" \
+      org.opencontainers.image.title="mmproxy" \
+      org.opencontainers.image.description="Event-driven Linux PROXY protocol relay" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 COPY --from=build /mmproxy /usr/local/bin/mmproxy
 COPY LICENSE /LICENSE
 USER 65532:65532
